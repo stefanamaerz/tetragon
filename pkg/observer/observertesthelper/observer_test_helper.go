@@ -245,7 +245,14 @@ func getDefaultObserver(tb testing.TB, ctx context.Context, initialSensor *senso
 	// at some point in the future. I just don't see a better way that doesn't involve
 	// a lot of code changes in a lot of a files.
 	metricsEnableOnce.Do(func() {
-		go metricsconfig.EnableMetrics(metricsAddr)
+		// context.Background() rather than the per-test ctx: this server is a
+		// singleton for the whole test binary, so tying it to whichever test
+		// happened to be first would tear it down with that test.
+		if err := metricsconfig.EnableMetrics(context.Background(), metricsAddr); err != nil {
+			logger.GetLogger().Warn("Failed to start test metrics server, continuing without it",
+				"addr", metricsAddr, logfields.Error, err)
+			return
+		}
 		metricsconfig.InitHealthMetrics(metricsconfig.GetRegistry())
 		metricsconfig.InitEventsMetrics(metricsconfig.GetRegistry())
 	})

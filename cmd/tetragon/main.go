@@ -493,7 +493,9 @@ func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready fu
 	}
 
 	if option.Config.MetricsServer != "" {
-		go metricsconfig.EnableMetrics(option.Config.MetricsServer)
+		if err := metricsconfig.EnableMetrics(ctx, option.Config.MetricsServer); err != nil {
+			log.Error("Failed to start metrics server", "addr", option.Config.MetricsServer, logfields.Error, err)
+		}
 
 		reg := metricsconfig.GetRegistry()
 		metricsconfig.InitHealthMetrics(reg)
