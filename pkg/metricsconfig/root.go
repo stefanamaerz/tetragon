@@ -70,6 +70,7 @@ func serve(server *http.Server, listener net.Listener) (stop func()) {
 				logger.GetLogger().Error("Failed to shutdown metrics server", logfields.Error, err)
 			}
 			wg.Wait()
+			logger.GetLogger().Info("Metrics server stopped", "addr", listener.Addr())
 		})
 	}
 }
