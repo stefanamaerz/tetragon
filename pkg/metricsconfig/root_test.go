@@ -4,7 +4,6 @@
 package metricsconfig
 
 import (
-	"context"
 	"io"
 	"net"
 	"net/http"
@@ -34,13 +33,15 @@ func TestEnableMetricsBindError(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { occupied.Close() })
 
-		err = EnableMetrics(context.Background(), occupied.Addr().String())
+		stop, err := EnableMetrics(occupied.Addr().String())
 		require.Error(t, err)
+		require.Nil(t, stop)
 	})
 
 	t.Run("malformed address", func(t *testing.T) {
-		err := EnableMetrics(context.Background(), ":::::2112")
+		stop, err := EnableMetrics(":::::2112")
 		require.Error(t, err)
+		require.Nil(t, stop)
 	})
 }
 
@@ -61,17 +62,16 @@ func TestMetricsServer(t *testing.T) {
 	server, listener, err := newMetricsServer("127.0.0.1:0")
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	serveMetrics(ctx, server, listener)
+	stop := serve(server, listener)
+	t.Cleanup(stop)
 
 	url := "http://" + listener.Addr().String() + "/metrics"
 	client := newTestClient()
 
 	t.Run("serves the registry", func(t *testing.T) {
 		// No readiness polling needed: the listener is already bound before
-		// serveMetrics is called, so the kernel queues this connection until
-		// Serve() accepts it.
+		// serve is called, so the kernel queues this connection until Serve()
+		// accepts it.
 		resp, err := client.Get(url)
 		require.NoError(t, err)
 		t.Cleanup(func() { resp.Body.Close() })
@@ -83,18 +83,13 @@ func TestMetricsServer(t *testing.T) {
 		require.Contains(t, string(body), "tetragon_metricsconfig_test_total 1")
 	})
 
-	t.Run("shuts down when the context is canceled", func(t *testing.T) {
-		cancel()
+	t.Run("shuts down when stop is called", func(t *testing.T) {
+		// stop blocks until the serving goroutine has returned, so once it
+		// completes the server is guaranteed to no longer answer: no polling
+		// needed.
+		stop()
 
-		// Shutdown happens on a goroutine watching ctx.Done(), so poll until
-		// the address stops answering.
-		require.Eventually(t, func() bool {
-			resp, err := client.Get(url)
-			if err != nil {
-				return true
-			}
-			resp.Body.Close()
-			return false
-		}, 10*time.Second, 10*time.Millisecond, "metrics server still serving after context cancelation")
+		_, err := client.Get(url)
+		require.Error(t, err, "metrics server still serving after stop returned")
 	})
 }
