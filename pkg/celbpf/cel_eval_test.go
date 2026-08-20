@@ -94,66 +94,84 @@ func celLogicalNot(value ref.Val) ref.Val {
 	return celTypes.Bool(!bool(boolValue))
 }
 
-func celAdd(left, right ref.Val) ref.Val {
-	switch left := left.(type) {
-	case celTypes.Int:
-		right, ok := right.(celTypes.Int)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
+// celBinArithOp builds a binary arithmetic CEL function from per-type operators.
+// To add a new operation, just provide the four operator functions.
+func celBinArithOp(
+	intOp func(celTypes.Int, celTypes.Int) celTypes.Int,
+	uintOp func(celTypes.Uint, celTypes.Uint) celTypes.Uint,
+	s32Op func(int32, int32) int32,
+	u32Op func(uint32, uint32) uint32,
+) func(left, right ref.Val) ref.Val {
+	return func(left, right ref.Val) ref.Val {
+		switch left := left.(type) {
+		case celTypes.Int:
+			if r, ok := right.(celTypes.Int); ok {
+				return intOp(left, r)
+			}
+		case celTypes.Uint:
+			if r, ok := right.(celTypes.Uint); ok {
+				return uintOp(left, r)
+			}
+		case celS32:
+			if r, ok := right.(celS32); ok {
+				return newCelS32(s32Op(left.value, r.value))
+			}
+		case celU32:
+			if r, ok := right.(celU32); ok {
+				return newCelU32(u32Op(left.value, r.value))
+			}
 		}
-		return left + right
-	case celTypes.Uint:
-		right, ok := right.(celTypes.Uint)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return left + right
-	case celS32:
-		right, ok := right.(celS32)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return newCelS32(left.value + right.value)
-	case celU32:
-		right, ok := right.(celU32)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return newCelU32(left.value + right.value)
-	default:
 		return celTypes.MaybeNoSuchOverloadErr(left)
 	}
 }
 
-func celSubtract(left, right ref.Val) ref.Val {
-	switch left := left.(type) {
+var celAdd = celBinArithOp(
+	func(a, b celTypes.Int) celTypes.Int { return a + b },
+	func(a, b celTypes.Uint) celTypes.Uint { return a + b },
+	func(a, b int32) int32 { return a + b },
+	func(a, b uint32) uint32 { return a + b },
+)
+
+var celSubtract = celBinArithOp(
+	func(a, b celTypes.Int) celTypes.Int { return a - b },
+	func(a, b celTypes.Uint) celTypes.Uint { return a - b },
+	func(a, b int32) int32 { return a - b },
+	func(a, b uint32) uint32 { return a - b },
+)
+
+var celBitwiseAND = celBinArithOp(
+	func(a, b celTypes.Int) celTypes.Int { return a & b },
+	func(a, b celTypes.Uint) celTypes.Uint { return a & b },
+	func(a, b int32) int32 { return a & b },
+	func(a, b uint32) uint32 { return a & b },
+)
+
+var celBitwiseOR = celBinArithOp(
+	func(a, b celTypes.Int) celTypes.Int { return a | b },
+	func(a, b celTypes.Uint) celTypes.Uint { return a | b },
+	func(a, b int32) int32 { return a | b },
+	func(a, b uint32) uint32 { return a | b },
+)
+
+var celBitwiseXOR = celBinArithOp(
+	func(a, b celTypes.Int) celTypes.Int { return a ^ b },
+	func(a, b celTypes.Uint) celTypes.Uint { return a ^ b },
+	func(a, b int32) int32 { return a ^ b },
+	func(a, b uint32) uint32 { return a ^ b },
+)
+
+func celBitwiseNOT(value ref.Val) ref.Val {
+	switch v := value.(type) {
 	case celTypes.Int:
-		right, ok := right.(celTypes.Int)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return left - right
+		return ^v
 	case celTypes.Uint:
-		right, ok := right.(celTypes.Uint)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return left - right
+		return ^v
 	case celS32:
-		right, ok := right.(celS32)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return newCelS32(left.value - right.value)
+		return newCelS32(^v.value)
 	case celU32:
-		right, ok := right.(celU32)
-		if !ok {
-			return celTypes.MaybeNoSuchOverloadErr(right)
-		}
-		return newCelU32(left.value - right.value)
-	default:
-		return celTypes.MaybeNoSuchOverloadErr(left)
+		return newCelU32(^v.value)
 	}
+	return celTypes.MaybeNoSuchOverloadErr(value)
 }
 
 func compareIntegers[T int32 | uint32 | celTypes.Int | celTypes.Uint](op string, left, right T) ref.Val {
@@ -202,7 +220,7 @@ func celInequality(op string, left, right ref.Val) ref.Val {
 	}
 }
 
-func getOverloadOpts(o *fnOverload) []cel.OverloadOpt {
+func getOverloadOpts(t *testing.T, o *fnOverload) []cel.OverloadOpt {
 	var ret []cel.OverloadOpt
 	switch o.name {
 	case "u32fromuint":
@@ -213,6 +231,9 @@ func getOverloadOpts(o *fnOverload) []cel.OverloadOpt {
 		return append(ret, cel.UnaryBinding(func(value ref.Val) ref.Val {
 			return newCelS32(int32(value.(celTypes.Int)))
 		}))
+	case "equals", "not_equals", "logical_and", "logical_or":
+		return ret
+
 	}
 
 	if strings.HasPrefix(o.name, "sub_") {
@@ -221,6 +242,22 @@ func getOverloadOpts(o *fnOverload) []cel.OverloadOpt {
 
 	if strings.HasPrefix(o.name, "add_") {
 		return append(ret, cel.BinaryBinding(celAdd))
+	}
+
+	if strings.HasPrefix(o.name, andFn) {
+		return append(ret, cel.BinaryBinding(celBitwiseAND))
+	}
+
+	if strings.HasPrefix(o.name, orFn) {
+		return append(ret, cel.BinaryBinding(celBitwiseOR))
+	}
+
+	if strings.HasPrefix(o.name, xorFn) {
+		return append(ret, cel.BinaryBinding(celBitwiseXOR))
+	}
+
+	if strings.HasPrefix(o.name, notFn) {
+		return append(ret, cel.UnaryBinding(celBitwiseNOT))
 	}
 
 	for _, ineq := range []string{"lt", "lq", "gt", "gq"} {
@@ -236,6 +273,7 @@ func getOverloadOpts(o *fnOverload) []cel.OverloadOpt {
 		return append(ret, cel.UnaryBinding(celLogicalNot))
 	}
 
+	t.Fatalf("TODO: implement getOverloadOpts for %s", o.name)
 	return ret
 }
 
@@ -250,7 +288,7 @@ func evalCEL(t *testing.T, expr string, hookArgs []any) uint32 {
 	for _, fnOpt := range getFnsOpts() {
 		fnOpts := make([]cel.FunctionOpt, 0, len(fnOpt.overloads))
 		for _, o := range fnOpt.overloads {
-			overloadOpts := getOverloadOpts(&o)
+			overloadOpts := getOverloadOpts(t, &o)
 			fnOpts = append(fnOpts, cel.Overload(o.name, o.args, o.res, overloadOpts...))
 		}
 		opts = append(opts, cel.Function(fnOpt.name, fnOpts...))
@@ -284,7 +322,7 @@ func evalCEL(t *testing.T, expr string, hookArgs []any) uint32 {
 	prog, err := env.Program(ast)
 	require.NoError(t, err)
 	result, _, err := prog.Eval(values)
-	require.NoError(t, err)
+	require.NoError(t, err, "Failed to evaluate CEL program")
 
 	boolResult, ok := result.(celTypes.Bool)
 	require.True(t, ok, "CEL expression %q returned %T, not bool", expr, result)

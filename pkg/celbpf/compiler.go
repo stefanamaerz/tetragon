@@ -82,18 +82,26 @@ func (c *compiler) compileCall(expr cgAst.Expr) error {
 
 	case cgOperators.Add:
 		emitCall = func() error {
-			return c.cg.emitAdd(
+			if err := c.cg.emitArithOp(
+				asm.Add,
 				scratchRegs[0], argTypes[0],
 				scratchRegs[1], argTypes[1],
-			)
+			); err != nil {
+				return fmt.Errorf("addition %w", err)
+			}
+			return nil
 		}
 
 	case cgOperators.Subtract:
 		emitCall = func() error {
-			return c.cg.emitSub(
+			if err := c.cg.emitArithOp(
+				asm.Sub,
 				scratchRegs[0], argTypes[0],
 				scratchRegs[1], argTypes[1],
-			)
+			); err != nil {
+				return fmt.Errorf("subtraction %w", err)
+			}
+			return nil
 		}
 
 	case cgOperators.LogicalAnd:
@@ -125,6 +133,47 @@ func (c *compiler) compileCall(expr cgAst.Expr) error {
 				op,
 				scratchRegs[2])
 
+		}
+
+	case andFn:
+		emitCall = func() error {
+			if err := c.cg.emitArithOp(
+				asm.And,
+				scratchRegs[0], argTypes[0],
+				scratchRegs[1], argTypes[1],
+			); err != nil {
+				return fmt.Errorf("bitwise AND %w", err)
+			}
+			return nil
+		}
+
+	case orFn:
+		emitCall = func() error {
+			if err := c.cg.emitArithOp(
+				asm.Or,
+				scratchRegs[0], argTypes[0],
+				scratchRegs[1], argTypes[1],
+			); err != nil {
+				return fmt.Errorf("bitwise OR %w", err)
+			}
+			return nil
+		}
+
+	case xorFn:
+		emitCall = func() error {
+			if err := c.cg.emitArithOp(
+				asm.Xor,
+				scratchRegs[0], argTypes[0],
+				scratchRegs[1], argTypes[1],
+			); err != nil {
+				return fmt.Errorf("bitwise XOR %w", err)
+			}
+			return nil
+		}
+
+	case notFn:
+		emitCall = func() error {
+			return c.cg.emitBitwiseNot(scratchRegs[0], argTypes[0])
 		}
 
 	default:

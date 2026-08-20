@@ -84,12 +84,20 @@ func InitCache(w watcher.PodAccessor, size int, GCInterval time.Duration) error 
 		FreeCache()
 	}
 
-	k8s = w
+	SetK8sWatcher(w)
 	procCache, err = NewCache(size, GCInterval)
 	if err != nil {
-		k8s = nil
+		SetK8sWatcher(nil)
 	}
 	return err
+}
+
+// SetK8sWatcher sets the k8s watcher used to retrieve pod metadata for
+// processes. This is independent of the process cache, so callers should
+// invoke it even when the process cache is disabled (e.g. via
+// --disable-process-cache) to ensure pod info is still attached to events.
+func SetK8sWatcher(w watcher.PodAccessor) {
+	k8s = w
 }
 
 func FreeCache() {
@@ -330,7 +338,10 @@ func initProcessInternalExec(
 	}
 	creds := &event.Msg.Creds
 	execID := GetExecID(&process)
-	protoPod := GetPodInfo(event.Kube.Docker, process.Filename, args, process.NSPID)
+	var protoPod *tetragon.Pod
+	if option.Config.EnableK8s && event.Kube.Docker != "" {
+		protoPod = GetPodInfo(event.Kube.Docker, process.Filename, args, process.NSPID)
+	}
 	apiCaps := caps.GetMsgCapabilities(event.Msg.Creds.Cap)
 	binary := path.GetBinaryAbsolutePath(process.Filename, cwd)
 	apiNs, err := namespace.GetMsgNamespaces(event.Msg.Namespaces)
@@ -522,6 +533,10 @@ func GetPodInfo(containerID, bin, args string, nspid uint32) *tetragon.Pod {
 }
 
 func GetParentProcessInternal(pid uint32, ktime uint64) (*ProcessInternal, *ProcessInternal) {
+	if option.Config.DisableProcessCache {
+		return nil, nil
+	}
+
 	var parent, process *ProcessInternal
 	var err error
 
@@ -581,7 +596,10 @@ func AddExecEvent(event *tetragonAPI.MsgExecveEventUnix) *ProcessInternal {
 		proc = initProcessInternalExec(event, event.Msg.CleanupProcess)
 	}
 
-	procCache.add(proc)
+	if !option.Config.DisableProcessCache {
+		procCache.add(proc)
+	}
+
 	return proc
 }
 
@@ -613,7 +631,10 @@ func Get(execId string) (*ProcessInternal, error) {
 }
 
 func DumpProcessCache(opts *tetragon.DumpProcessCacheReqArgs) []*tetragon.ProcessInternal {
-	return procCache.dump(opts)
+	if !option.Config.DisableProcessCache {
+		return procCache.dump(opts)
+	}
+	return []*tetragon.ProcessInternal{}
 }
 
 // This function returns the process cache entries (and not the copies

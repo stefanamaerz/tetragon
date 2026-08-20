@@ -31,7 +31,7 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         # renovate: datasource=golang-version depName=go
-        go-version: '1.26.5'
+        go-version: '1.26.6'
 
     - name: Set Up Job Variables
       id: vars
@@ -86,7 +86,7 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         # renovate: datasource=golang-version depName=go
-        go-version: '1.26.5'
+        go-version: '1.26.6'
 
     - name: Install kubectl
       uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
@@ -98,7 +98,7 @@ jobs:
       uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       with:
         # renovate: datasource=github-releases depName=helm/helm
-        version: v4.2.3
+        version: v4.2.4
 
     - name: Install Minikube
       uses: medyagh/setup-minikube@e9e035a86bbc3caea26a450bd4dbf9d0c453682e # v0.0.21
