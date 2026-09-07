@@ -629,7 +629,9 @@ func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready fu
 	}
 
 	if option.Config.HealthServerAddress != "" {
-		health.StartHealthServer(ctx, option.Config.HealthServerAddress, option.Config.HealthServerInterval)
+		if err := health.StartHealthServer(ctx, option.Config.HealthServerAddress, option.Config.HealthServerInterval); err != nil {
+			return err
+		}
 	}
 
 	log.Info("Exporter configuration", "enabled", option.Config.ExportFilename != "", "fileName", option.Config.ExportFilename)

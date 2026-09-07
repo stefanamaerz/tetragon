@@ -5,6 +5,8 @@ package health
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -21,7 +23,11 @@ var (
 	log = logger.GetLogger()
 )
 
-func StartHealthServer(ctx context.Context, address string, interval int) {
+// StartHealthServer binds the health check listener and serves it in the
+// background. It returns an error only if binding fails. Other Serve errors
+// are fatal except for grpc.ErrServerStopped, which is returned when the
+// server is stopped as part of a clean shutdown.
+func StartHealthServer(ctx context.Context, address string, interval int) error {
 	// Create a new health server and mark it as serving.
 	healthServer := gh.NewServer()
 	healthServer.SetServingStatus("liveness", grpc_health_v1.HealthCheckResponse_SERVING)
@@ -30,19 +36,15 @@ func StartHealthServer(ctx context.Context, address string, interval int) {
 	grpcHealthServer := grpc.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcHealthServer, healthServer)
 
-	// Start the gRPC server for the health checks.
-	go func() {
-		// the gRPC server for the health checks listens on port 6789
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			logger.Fatal(log, "Failed to listen for gRPC healthserver")
-		}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to listen for gRPC healthserver: %w", err)
+	}
+	log.Info("Starting gRPC health server", "address", address, "interval", interval)
 
-		log.Info("Starting gRPC health server", "address", address, "interval", interval)
-		if err = grpcHealthServer.Serve(listener); err != nil {
-			logger.Fatal(log, "Failed to start gRPC healthserver", logfields.Error, err)
-		}
-	}()
+	// Serve until ctx is cancelled, at which point Stop() below makes Serve
+	// return grpc.ErrServerStopped.
+	go serveHealth(grpcHealthServer, listener)
 
 	// Check the agent health periodically. To check if our agent is health we call
 	// health.GetHealth() and we report the status to the healthServer.
@@ -66,4 +68,12 @@ func StartHealthServer(ctx context.Context, address string, interval int) {
 			}
 		}
 	}()
+
+	return nil
+}
+
+func serveHealth(srv *grpc.Server, lis net.Listener) {
+	if err := srv.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		logger.Fatal(log, "gRPC health server Serve returned error", logfields.Error, err)
+	}
 }
