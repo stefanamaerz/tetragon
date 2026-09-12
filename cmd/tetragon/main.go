@@ -467,9 +467,11 @@ func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready fu
 
 	logSrv := eventlog.New(exporter)
 
-	if err = Serve(ctx, option.Config.ServerAddress, pm.Server, logSrv); err != nil {
+	stopGrpc, err := Serve(ctx, option.Config.ServerAddress, pm.Server, logSrv)
+	if err != nil {
 		return err
 	}
+	defer stopGrpc()
 
 	// Finally start exporter if needed
 	if exporter != nil {
@@ -681,10 +683,10 @@ func getExporter(ctx context.Context, server *server.Server) (*exporter.Exporter
 	return exporter.NewExporter(ctx, &req, server, encoder, writer, rateLimiter)
 }
 
-func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *eventlog.Server) error {
+func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *eventlog.Server) (func(), error) {
 	// we use an empty listen address to effectively disable the gRPC server
 	if len(listenAddr) == 0 {
-		return nil
+		return func() {}, nil
 	}
 	grpcServer := grpc.NewServer()
 	tetragon.RegisterFineGuidanceSensorsServer(grpcServer, srv)
@@ -692,34 +694,36 @@ func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *e
 
 	proto, addr, err := server.SplitListenAddr(listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to parse listen address: %w", err)
+		return nil, fmt.Errorf("failed to parse listen address: %w", err)
 	}
-	go func(proto, addr string) {
-		var listener net.Listener
-		var err error
-		if proto == "unix" {
-			listener, err = unixlisten.ListenWithRename(addr, 0660)
-		} else {
-			listener, err = net.Listen(proto, addr)
-		}
-		if err != nil {
-			logger.Fatal(log, "Failed to start gRPC server", "protocol", proto, "address", addr, logfields.Error, err)
-		}
-		log.Info("Starting gRPC server", "protocol", proto, "address", addr)
+	var listener net.Listener
+	if proto == "unix" {
+		listener, err = unixlisten.ListenWithRename(addr, 0660)
+	} else {
+		listener, err = net.Listen(proto, addr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to start gRPC server on %s://%s: %w", proto, addr, err)
+	}
+	log.Info("Starting gRPC server", "protocol", proto, "address", addr)
+	go func() {
 		if err = grpcServer.Serve(listener); err != nil {
 			log.Error("Failed to close gRPC server", logfields.Error, err)
 		}
-	}(proto, addr)
-	go func(proto, addr string) {
-		<-ctx.Done()
+	}()
+	stop := func() {
 		grpcServer.Stop()
 		// if proto is unix, ListenWithRename() creates the socket
 		// then renames it, so explicitly clean it up.
 		if proto == "unix" {
 			os.Remove(addr)
 		}
-	}(proto, addr)
-	return nil
+	}
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return stop, nil
 }
 
 func startGopsServer() error {
@@ -767,6 +771,9 @@ func execute() error {
 			}
 
 			if err := tetragonExecute(); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
 				logger.Fatal(log, "Failed to execute tetragon", logfields.Error, err)
 			}
 		},
