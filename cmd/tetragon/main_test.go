@@ -8,19 +8,24 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/cilium/tetragon/api/v1/tetragon"
 	ec "github.com/cilium/tetragon/api/v1/tetragon/codegen/eventchecker"
 	"github.com/cilium/tetragon/pkg/constants"
 	"github.com/cilium/tetragon/pkg/defaults"
 	"github.com/cilium/tetragon/pkg/jsonchecker"
 	"github.com/cilium/tetragon/pkg/option"
+	"github.com/cilium/tetragon/pkg/server"
+	"github.com/cilium/tetragon/pkg/server/eventlog"
 	"github.com/cilium/tetragon/pkg/testutils"
 	tus "github.com/cilium/tetragon/pkg/testutils/sensors"
+	"github.com/cilium/tetragon/pkg/tracingpolicy"
 )
 
 func TestMain(m *testing.M) {
@@ -96,4 +101,47 @@ func TestGeneratedExecEvents(t *testing.T) {
 	// blocking on terminating tetragon
 	err = <-errCh
 	require.NoError(t, err)
+}
+
+type fakeServerObserver struct{}
+
+func (fakeServerObserver) AddTracingPolicy(context.Context, tracingpolicy.TracingPolicy) error {
+	return nil
+}
+func (fakeServerObserver) DeleteTracingPolicy(context.Context, string, string) error { return nil }
+func (fakeServerObserver) ListTracingPolicies(context.Context) (*tetragon.ListTracingPoliciesResponse, error) {
+	return nil, nil
+}
+func (fakeServerObserver) ConfigureTracingPolicy(context.Context, *tetragon.ConfigureTracingPolicyRequest) error {
+	return nil
+}
+func (fakeServerObserver) DisableTracingPolicy(context.Context, string, string) error { return nil }
+func (fakeServerObserver) EnableTracingPolicy(context.Context, string, string) error  { return nil }
+
+// TestServeUnixSocketCleanup verifies that Serve() cleans up the unix socket
+// on shutdown, even when ctx is cancelled shortly after startup.
+func TestServeUnixSocketCleanup(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "tetragon.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	srv := server.NewServer(ctx, &wg, nil, fakeServerObserver{}, nil)
+	logSrv := eventlog.New(nil)
+	stop, err := Serve(ctx, "unix://"+sockPath, srv, logSrv)
+	require.NoError(t, err)
+	require.NotNil(t, stop)
+
+	// Wait for the listener goroutine to create the socket.
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(sockPath)
+		return err == nil
+	}, time.Second, 10*time.Millisecond, "socket file was not created")
+
+	stop()
+
+	_, err = os.Stat(sockPath)
+	require.True(t, os.IsNotExist(err), "socket file was not removed")
 }
