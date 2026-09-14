@@ -617,9 +617,11 @@ func tetragonExecuteCtx(ctx context.Context, cancel context.CancelFunc, ready fu
 
 	logSrv := eventlog.New(exporter)
 
-	if err = Serve(ctx, option.Config.ServerAddress, pm.Server, logSrv); err != nil {
+	stopGrpc, err := Serve(ctx, option.Config.ServerAddress, pm.Server, logSrv)
+	if err != nil {
 		return err
 	}
+	defer stopGrpc()
 
 	// Finally start exporter if needed
 	if exporter != nil {
@@ -883,11 +885,14 @@ func getExporter(ctx context.Context, server *server.Server) (*exporter.Exporter
 // unix socket at the platform default path, with --server-tls-* gating
 // the TCP path. Windows skips the sidecar unix listener.
 //
+// The returned stop function shuts down the listener(s) and removes any
+// unix socket file synchronously. It is safe to call stop multiple times.
+//
 // extraOpts apply to every listener; callers should not pass grpc.Creds
 // here. TLS is attached to the TCP path via buildServerTLSOptions.
-func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *eventlog.Server, extraOpts ...grpc.ServerOption) error {
+func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *eventlog.Server, extraOpts ...grpc.ServerOption) (func(), error) {
 	if listenAddr == "" {
-		return nil
+		return func() {}, nil
 	}
 	register := func(s *grpc.Server) {
 		tetragon.RegisterFineGuidanceSensorsServer(s, srv)
@@ -895,25 +900,39 @@ func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *e
 	}
 	proto, addr, err := server.SplitListenAddr(listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to parse listen address: %w", err)
+		return nil, fmt.Errorf("failed to parse listen address: %w", err)
+	}
+
+	var stops []func()
+	stopAll := func() {
+		for _, stop := range stops {
+			stop()
+		}
 	}
 
 	if proto == "unix" {
-		if err := serveOne(ctx, "unix", addr, extraOpts, register); err != nil {
-			return fmt.Errorf("starting unix gRPC listener: %w", err)
+		stop, err := serveOne(ctx, "unix", addr, extraOpts, register)
+		if err != nil {
+			stopAll()
+			return nil, fmt.Errorf("starting unix gRPC listener: %w", err)
 		}
-		return nil
+		stops = append(stops, stop)
+		return stopAll, nil
 	}
 
 	if sockPath, ok := resolveUnixSocketPath(listenAddr); ok {
-		if err := serveOne(ctx, "unix", sockPath, extraOpts, register); err != nil {
-			return fmt.Errorf("starting unix gRPC listener: %w", err)
+		stop, err := serveOne(ctx, "unix", sockPath, extraOpts, register)
+		if err != nil {
+			stopAll()
+			return nil, fmt.Errorf("starting unix gRPC listener: %w", err)
 		}
+		stops = append(stops, stop)
 	}
 
 	tlsOpts, tlsEnabled, err := buildServerTLSOptions(ctx)
 	if err != nil {
-		return err
+		stopAll()
+		return nil, err
 	}
 	if !tlsEnabled {
 		log.Warn("Tetragon gRPC TCP listener is exposing the API without TLS; configure --"+
@@ -929,20 +948,25 @@ func Serve(ctx context.Context, listenAddr string, srv *server.Server, logSrv *e
 	}
 	grpcOpts := append([]grpc.ServerOption{}, extraOpts...)
 	grpcOpts = append(grpcOpts, tlsOpts...)
-	if err := serveOne(ctx, proto, addr, grpcOpts, register); err != nil {
-		return fmt.Errorf("starting TCP gRPC listener: %w", err)
+	stop, err := serveOne(ctx, proto, addr, grpcOpts, register)
+	if err != nil {
+		stopAll()
+		return nil, fmt.Errorf("starting TCP gRPC listener: %w", err)
 	}
-	return nil
+	stops = append(stops, stop)
+	return stopAll, nil
 }
 
 // serveOne binds the listener synchronously so bind failures surface as
-// a returned error rather than a runtime fatal.
+// a returned error rather than a runtime fatal. The returned stop function
+// stops the gRPC server, removes a unix socket file if one was created, and
+// waits for the serve goroutine to exit. Calling stop more than once is safe.
 func serveOne(
 	ctx context.Context,
 	proto, addr string,
 	grpcOpts []grpc.ServerOption,
 	register func(*grpc.Server),
-) error {
+) (func(), error) {
 	var listener net.Listener
 	var err error
 	if proto == "unix" {
@@ -951,25 +975,28 @@ func serveOne(
 		listener, err = net.Listen(proto, addr)
 	}
 	if err != nil {
-		return fmt.Errorf("listen %s://%s: %w", proto, addr, err)
+		return nil, fmt.Errorf("listen %s://%s: %w", proto, addr, err)
 	}
 	grpcServer := grpc.NewServer(grpcOpts...)
 	register(grpcServer)
 
+	serveErr := make(chan error, 1)
 	go func() {
 		log.Info("Starting gRPC server", "protocol", proto, "address", addr)
-		if err := grpcServer.Serve(listener); err != nil {
-			log.Error("gRPC Serve returned", logfields.Error, err)
-		}
+		serveErr <- grpcServer.Serve(listener)
 	}()
-	go func() {
-		<-ctx.Done()
-		grpcServer.Stop()
-		if proto == "unix" {
-			os.Remove(addr)
-		}
-	}()
-	return nil
+
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			grpcServer.Stop()
+			if proto == "unix" {
+				os.Remove(addr)
+			}
+			<-serveErr
+		})
+	}
+	return stop, nil
 }
 
 // buildServerTLSOptions returns the credentials option for the TCP
